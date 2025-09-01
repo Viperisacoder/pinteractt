@@ -1,0 +1,87 @@
+.qr-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.qr-modal-content {
+  background-color: white;
+  border-radius: 8px;
+  padding: 24px;
+  width: 90%;
+  max-width: 400px;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1), 0 1px 3px rgba(0, 0, 0, 0.08);
+  position: relative;
+  text-align: center;
+}
+
+.qr-close-button {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  background: none;
+  border: none;
+  font-size: 24px;
+  cursor: pointer;
+  color: #4a5568;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+}
+
+.qr-close-button:hover {
+  background-color: #f7fafc;
+}
+
+.qr-code-container {
+  margin: 24px 0;
+  display: flex;
+  justify-content: center;
+}
+
+.qr-url {
+  word-break: break-all;
+  margin: 16px 0;
+  padding: 8px;
+  background-color: #f7fafc;
+  border-radius: 4px;
+  font-size: 14px;
+  color: #4a5568;
+}
+
+.qr-modal-footer {
+  margin-top: 24px;
+  display: flex;
+  justify-content: center;
+}
+
+.qr-share-button {
+  background-color: #4299e1;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  padding: 8px 16px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.qr-share-button:hover {
+  background-color: #3182ce;
+}
+
+h3 {
+  margin-top: 0;
+  color: #2d3748;
+  font-weight: 600;
+}

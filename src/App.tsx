@@ -1,5 +1,22 @@
-import React, { useState, useRef, useEffect } from 'react';
-import './new-styles.css';
+import React, { useState, useEffect, useRef } from 'react';
+// Import router components when needed in JSX
+import { Routes, Route } from 'react-router-dom';
+import { toast, ToastContainer } from 'react-toastify';
+// Import components used in the Routes
+import ViewMode from './ViewMode';
+import QRCodeModal from './QRCodeModal';
+import NotFound from './NotFound';
+import ShareOptionsModal from './ShareOptionsModal';
+import ImageUpload from './components/ImageUpload';
+import ImageView from './components/ImageView';
+import Navigation from './components/Navigation';
+import HomePage from './components/HomePage';
+import { createShareLink, getShareLinks } from './supabaseClient';
+
+// Import styles
+import 'react-toastify/dist/ReactToastify.css';
+import './App.css';
+import './minimal-styles.css';
 
 // TypeScript interfaces
 interface Pin {
@@ -15,50 +32,102 @@ interface ShareLink {
   id: string;
   url: string;
   projectId: string;
+  short_id: string;
   createdAt: Date;
+  expiresAt: Date | null;
 }
 
 interface Project {
+  id: string;
+  name: string;
+  pinshots: Pinshot[];
+}
+
+interface Pinshot {
   id: string;
   name: string;
   image: string | null;
   pins: Pin[];
 }
 
-interface PinShot {
-  id: string;
-  name: string;
-  image: string;
-  status: 'pending' | 'resolved';
-}
-
-const App: React.FC = () => {
+// Main App component
+const App = (): React.ReactElement => {
   // State management
   const [projects, setProjects] = useState<Project[]>([
-    { id: '1', name: 'My Project', image: null, pins: [] }
+    { id: '1', name: 'My Project', pinshots: [{ id: '1', name: 'Screenshot', image: null, pins: [] }] }
   ]);
   const [activeProject, setActiveProject] = useState<string>('1');
-  const [showCreateProject, setShowCreateProject] = useState<boolean>(false);
+  const [showCreateProject, setShowCreateProject] = useState(false); 
   const [newProjectName, setNewProjectName] = useState<string>('');
-  const [activePinId, setActivePinId] = useState<string | null>(null);
-  const [commentInput, setCommentInput] = useState<string>('');
+  const [selectedPin, setSelectedPin] = useState<string | null>(null);
   const [pendingPin, setPendingPin] = useState<{ x: number, y: number } | null>(null);
-  const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
-  const [showSidebar, setShowSidebar] = useState<boolean>(true);
+  const [pendingComment, setPendingComment] = useState<string>('');
+  const [showSidebar, setShowSidebar] = useState(true);
   const [selectedPinshot, setSelectedPinshot] = useState<string | null>(null);
-  const [pinColor, setPinColor] = useState<string>('#FF4D4F');
-  const [projectMenuOpen, setProjectMenuOpen] = useState<string | null>(null);
-  const [detailView, setDetailView] = useState<boolean>(false);
   const [shareLinks, setShareLinks] = useState<ShareLink[]>([]);
   const [isGeneratingLink, setIsGeneratingLink] = useState<boolean>(false);
-  const [showShareHistory, setShowShareHistory] = useState<boolean>(false);
-  
+  const [showQRCode, setShowQRCode] = useState<boolean>(false);
+  const [currentShareUrl, setCurrentShareUrl] = useState<string>('');
+  const [showShareOptions, setShowShareOptions] = useState<boolean>(false);
+  const [pinColor, setPinColor] = useState<string>('#FF4D4F');
+
   // Refs
   const imageContainerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Load projects from localStorage on mount
+  useEffect(() => {
+    const savedProjects = localStorage.getItem('projects');
+    if (savedProjects) {
+      setProjects(JSON.parse(savedProjects));
+    }
+  }, []);
+
+  // Navigate to view mode - commented out as currently unused
+  // const goToViewMode = (projectData: string) => {
+  //   setViewMode(true);
+  //   // Additional logic for view mode navigation
+  // };
+
+  // Load share links from Supabase
+  const loadShareLinks = async () => {
+    if (activeProject) {
+      try {
+        const links = await getShareLinks(activeProject);
+        if (!links || !Array.isArray(links)) {
+          console.error('Invalid response from getShareLinks:', links);
+          return;
+        }
+        
+        const formattedLinks = links.map((link) => {
+          if (!link || !link.short_id) {
+            console.error('Invalid link object:', link);
+            return null;
+          }
+          
+          const shareLink: ShareLink = {
+            id: link.id,
+            url: `${window.location.origin}/view/${link.short_id}`,
+            projectId: link.project_id,
+            short_id: link.short_id,
+            createdAt: new Date(link.created_at),
+            expiresAt: link.expires_at ? new Date(link.expires_at) : null
+          };
+          return shareLink;
+        }).filter(link => link !== null) as ShareLink[];
+        
+        setShareLinks(formattedLinks);
+      } catch (error) {
+        console.error('Error loading share links:', error);
+        toast.error('Failed to load share links');
+      }
+    }
+  };
   
-  // Get current project
-  const currentProject = projects.find(p => p.id === activeProject) || projects[0];
+  // Load share links when active project changes
+  useEffect(() => {
+    loadShareLinks();
+  }, [activeProject]);
 
   // Handle project creation
   const handleCreateProject = () => {
@@ -66,8 +135,7 @@ const App: React.FC = () => {
       const newProject: Project = {
         id: Date.now().toString(),
         name: newProjectName,
-        image: null,
-        pins: []
+        pinshots: []
       };
       setProjects([...projects, newProject]);
       setActiveProject(newProject.id);
@@ -79,683 +147,484 @@ const App: React.FC = () => {
   // Handle project deletion
   const handleDeleteProject = (projectId: string) => {
     if (projects.length <= 1) {
-      alert('Cannot delete the last project');
+      toast.error('Cannot delete the last project');
       return;
     }
     
     const updatedProjects = projects.filter(project => project.id !== projectId);
     setProjects(updatedProjects);
     
-    // If the active project is being deleted, set another project as active
-    if (projectId === activeProject) {
+    if (activeProject === projectId) {
       setActiveProject(updatedProjects[0].id);
     }
-    
-    setProjectMenuOpen(null);
   };
-
-  // Handle image upload
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  
+  // Handle project click
+  const handleProjectClick = (projectId: string) => {
+    setActiveProject(projectId);
+    setSelectedPinshot(null);
+  };
+  
+  // Handle pinshot click
+  const handlePinshotClick = (pinshotId: string) => {
+    setSelectedPinshot(pinshotId);
+  };
+  
+  // Handle file change for image upload
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
+    if (file && activeProject) {
       const reader = new FileReader();
       reader.onload = (event) => {
-        const updatedProjects = projects.map(project => {
-          if (project.id === activeProject) {
-            return { ...project, image: event.target?.result as string };
-          }
-          return project;
-        });
-        setProjects(updatedProjects);
+        const currentProject = projects.find(p => p.id === activeProject);
+        if (currentProject) {
+          const newPinshot: Pinshot = {
+            id: Date.now().toString(),
+            name: file.name,
+            image: event.target?.result as string,
+            pins: []
+          };
+          
+          const updatedProjects = projects.map(project => {
+            if (project.id === activeProject) {
+              return {
+                ...project,
+                pinshots: [...project.pinshots, newPinshot]
+              };
+            }
+            return project;
+          });
+          
+          setProjects(updatedProjects);
+          setSelectedPinshot(newPinshot.id);
+        }
       };
       reader.readAsDataURL(file);
     }
   };
-
-  // Handle image click to add a pin - only when clicking directly on the image
+  
+  // Handle adding a new pinshot
+  const handleAddPinshot = () => {
+    if (fileInputRef.current) {
+      fileInputRef.current.click();
+    }
+  };
+  
+  // Handle image click to add a pin
   const handleImageClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    // Check if we're clicking on the image element itself and not on a child element
-    if (e.target !== e.currentTarget.querySelector('img')) return;
-    if (!currentProject.image || !imageContainerRef.current) return;
-    
-    const rect = imageContainerRef.current.getBoundingClientRect();
-    const x = ((e.clientX - rect.left) / rect.width) * 100;
-    const y = ((e.clientY - rect.top) / rect.height) * 100;
-    
-    setPendingPin({ x, y });
+    if (imageContainerRef.current && selectedPinshot) {
+      const rect = imageContainerRef.current.getBoundingClientRect();
+      const x = ((e.clientX - rect.left) / rect.width) * 100;
+      const y = ((e.clientY - rect.top) / rect.height) * 100;
+      
+      setPendingPin({ x, y });
+    }
   };
-
+  
   // Handle pin click
-  const handlePinClick = (e: React.MouseEvent, pinId: string) => {
-    e.stopPropagation();
-    setActivePinId(activePinId === pinId ? null : pinId);
+  const handlePinClick = (pinId: string) => {
+    setSelectedPin(pinId);
+    setPendingPin(null);
   };
-
-  // Handle comment submission
-  const handleCommentSubmit = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (pendingPin && commentInput.trim()) {
+  
+  // Handle comment change
+  const handleCommentChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    setPendingComment(e.target.value);
+  };
+  
+  // Handle comment submit
+  const handleCommentSubmit = () => {
+    if (pendingPin && pendingComment && selectedPinshot) {
       const newPin: Pin = {
         id: Date.now().toString(),
         x: pendingPin.x,
         y: pendingPin.y,
-        comment: commentInput,
+        comment: pendingComment,
         status: 'pending',
         color: pinColor
       };
       
       const updatedProjects = projects.map(project => {
         if (project.id === activeProject) {
-          return { ...project, pins: [...project.pins, newPin] };
+          return {
+            ...project,
+            pinshots: project.pinshots.map(pinshot => {
+              if (pinshot.id === selectedPinshot) {
+                return {
+                  ...pinshot,
+                  pins: [...pinshot.pins, newPin]
+                };
+              }
+              return pinshot;
+            })
+          };
         }
         return project;
       });
       
       setProjects(updatedProjects);
       setPendingPin(null);
-      setCommentInput('');
+      setPendingComment('');
     }
   };
-
-  // Handle comment cancellation
-  const handleCommentCancel = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    setPendingPin(null);
-    setCommentInput('');
-  };
-
-  // Toggle sidebar
-  const toggleSidebar = () => {
-    setShowSidebar(!showSidebar);
+  
+  // Handle status change
+  const handleStatusChange = (pinId: string, status: 'pending' | 'resolved') => {
+    const updatedProjects = projects.map(project => {
+      if (project.id === activeProject) {
+        return {
+          ...project,
+          pinshots: project.pinshots.map(pinshot => {
+            if (pinshot.id === selectedPinshot) {
+              return {
+                ...pinshot,
+                pins: pinshot.pins.map(pin => {
+                  if (pin.id === pinId) {
+                    return { ...pin, status };
+                  }
+                  return pin;
+                })
+              };
+            }
+            return pinshot;
+          })
+        };
+      }
+      return project;
+    });
+    
+    setProjects(updatedProjects);
   };
   
-  // Toggle project menu
-  const toggleProjectMenu = (projectId: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    setProjectMenuOpen(projectMenuOpen === projectId ? null : projectId);
+  // Save projects to localStorage when they change
+  useEffect(() => {
+    localStorage.setItem('projects', JSON.stringify(projects));
+  }, [projects]);
+  
+  // Get current project
+  const currentProject = projects.find(p => p.id === activeProject);
+  
+  // Get current pinshot
+  const currentPinshot = currentProject?.pinshots.find(p => p.id === selectedPinshot);
+  
+  // Get selected pin
+  const currentPin = currentPinshot?.pins.find(p => p.id === selectedPin);
+  
+  // Handle share button click
+  const handleShareClick = () => {
+    setShowShareOptions(true);
   };
   
-  // Go back from detail view
-  const goBackFromDetail = () => {
-    setDetailView(false);
-    setSelectedPinshot(null);
+  // Handle QR code button click
+  const handleQRCodeClick = (url: string) => {
+    setCurrentShareUrl(url);
+    setShowQRCode(true);
   };
+  
+  // No longer needed as share history is always visible
   
   // Generate share link
-  const generateShareLink = () => {
+  const generateShareLink = async (expirationDays: number | null = null) => {
+    if (!activeProject || !selectedPinshot) {
+      toast.error('Please select a project and pinshot first');
+      return;
+    }
+    
     setIsGeneratingLink(true);
+    setShowShareOptions(false);
     
-    // Simulate API call to generate Vercel deployment
-    setTimeout(() => {
-      const newLink: ShareLink = {
-        id: Date.now().toString(),
-        url: `https://pinner-share-${Date.now().toString().slice(-6)}.vercel.app`,
-        projectId: activeProject,
-        createdAt: new Date()
-      };
+    try {
+      const shareLink = await createShareLink(activeProject, expirationDays);
       
-      setShareLinks(prev => [...prev, newLink]);
+      if (shareLink) {
+        const shareUrl = `${window.location.origin}/view/${shareLink.short_id}`;
+        
+        // Copy to clipboard
+        try {
+          await navigator.clipboard.writeText(shareUrl);
+          toast.success('Share link copied to clipboard');
+          await loadShareLinks();
+        } catch (clipboardError) {
+          console.error('Clipboard error:', clipboardError);
+          toast.error('Failed to copy link');
+        }
+      } else {
+        throw new Error('No share link returned from server');
+      }
+      
+      // Reset loading state on success
       setIsGeneratingLink(false);
-      
-      // Open the share link in a new window
-      window.open(newLink.url, '_blank');
-    }, 1500);
-  };
-
-  // Add a new pinshot
-  const handleAddPinshot = () => {
-    if (!fileInputRef.current) return;
-    fileInputRef.current.click();
-  };
-  
-  // Handle file drop
-  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    e.stopPropagation();
-    
-    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      const file = e.dataTransfer.files[0];
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        const updatedProjects = projects.map(project => {
-          if (project.id === activeProject) {
-            return { ...project, image: event.target?.result as string };
-          }
-          return project;
-        });
-        setProjects(updatedProjects);
-      };
-      reader.readAsDataURL(file);
+    } catch (error) {
+      console.error('Error generating share link:', error);
+      toast.error('Failed to generate share link');
+      setIsGeneratingLink(false);
     }
   };
-  
-  // Handle drag over
-  const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    e.stopPropagation();
-  };
-
-  // Close active pin when clicking outside
-  useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      // Don't close if clicking inside a pin or comment
-      if (
-        e.target instanceof Node &&
-        (document.querySelector('.pin')?.contains(e.target) ||
-         document.querySelector('.comment-bubble')?.contains(e.target) ||
-         document.querySelector('.comment-input-container')?.contains(e.target))
-      ) {
-        return;
-      }
-      setActivePinId(null);
-    };
-    
-    document.addEventListener('click', handleClickOutside);
-    return () => {
-      document.removeEventListener('click', handleClickOutside);
-    };
-  }, []);
-
-  // Generate pinshots from current project
-  const pinshots: PinShot[] = currentProject.image 
-    ? [{
-        id: '1',
-        name: `${currentProject.name.toLowerCase().replace(/\s+/g, '-')}.png`,
-        image: currentProject.image,
-        status: 'pending'
-      }]
-    : [];
 
   return (
-    <div className="app">
-      {/* Detail View Mode */}
-      {detailView && selectedPinshot ? (
-        <div className="detail-view-mode">
-          <header className="detail-header">
-            <button className="back-button" onClick={goBackFromDetail}>
-              ← Back to Projects
-            </button>
-            <h2>{currentProject.name} / {pinshots.find(p => p.id === selectedPinshot)?.name}</h2>
-            <div className="detail-actions">
-              <div className="share-actions">
-                <button 
-                  className="share-btn" 
-                  onClick={generateShareLink}
-                  disabled={isGeneratingLink}
-                >
-                  {isGeneratingLink ? 'Generating...' : 'Share'}
+    <>
+      <Routes>
+        <Route path="/view" element={<ViewMode />} />
+        <Route path="/view/:id" element={<>
+          <Navigation />
+          <ImageView />
+        </>} />
+        <Route path="/upload" element={<>
+          <Navigation />
+          <ImageUpload />
+        </>} />
+        <Route path="/404" element={<NotFound />} />
+        <Route path="/" element={<HomePage />} />
+        <Route path="*" element={<NotFound />} />
+        <Route path="/home" element={
+          <div className="app-container">
+            {/* Sidebar */}
+            <div className={`sidebar ${showSidebar ? '' : 'collapsed'}`}>
+              <div className="sidebar-header">
+                <h1>Pinner</h1>
+                <button onClick={() => setShowSidebar(!showSidebar)} className="toggle-sidebar">
+                  {showSidebar ? '◀' : '▶'}
                 </button>
-                <button 
-                  className="share-history-btn"
-                  onClick={() => setShowShareHistory(!showShareHistory)}
-                >
-                  History
-                </button>
-                {showShareHistory && shareLinks.length > 0 && (
-                  <div className="share-history-dropdown">
-                    <h4>Recent Share Links</h4>
-                    <ul>
-                      {shareLinks
-                        .filter(link => link.projectId === activeProject)
-                        .map(link => (
-                        <li key={link.id}>
-                          <a href={link.url} target="_blank" rel="noopener noreferrer">
-                            {link.url.split('//')[1]}
-                          </a>
-                          <span className="share-date">
-                            {link.createdAt.toLocaleDateString()}
-                          </span>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
+              </div>
+              
+              {/* Project List */}
+              <div className="project-list">
+                <h2>Projects</h2>
+                <ul>
+                  {projects.map(project => (
+                    <li 
+                      key={project.id} 
+                      className={project.id === activeProject ? 'active' : ''}
+                      onClick={() => handleProjectClick(project.id)}
+                    >
+                      {project.name}
+                      <button onClick={(e) => { e.stopPropagation(); handleDeleteProject(project.id); }} className="delete-btn">×</button>
+                    </li>
+                  ))}
+                </ul>
+                <button onClick={() => setShowCreateProject(true)} className="add-project-btn">+ New Project</button>
               </div>
             </div>
-          </header>
-          
-          <div className="detail-content">
-            <div 
-              className="image-container" 
-              ref={imageContainerRef}
-              onClick={handleImageClick}
-            >
-              <img 
-                src={currentProject.image || ''} 
-                alt={currentProject.name} 
-              />
-              
-              {/* Display pins */}
-              {currentProject.pins.map(pin => (
-                <div 
-                  key={pin.id}
-                  className="pin"
-                  style={{ 
-                    left: `${pin.x}%`, 
-                    top: `${pin.y}%`,
-                  }}
-                  onClick={(e) => handlePinClick(e, pin.id)}
-                >
-                  <div 
-                    className="pin-icon"
-                    style={{ backgroundColor: pin.color || '#FF4D4F' }}
-                  ></div>
-                  {activePinId === pin.id && (
-                    <div className="comment-bubble">
-                      {pin.comment}
-                    </div>
-                  )}
-                </div>
-              ))}
-              
-              {/* Pending pin with comment input */}
-              {pendingPin && (
-                <div 
-                  className="pin pending"
-                  style={{ left: `${pendingPin.x}%`, top: `${pendingPin.y}%` }}
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <div 
-                    className="pin-icon"
-                    style={{ backgroundColor: pinColor }}
-                  ></div>
-                  <div className="comment-input-container">
-                    <textarea
-                      placeholder="Add your comment..."
-                      value={commentInput}
-                      onChange={(e) => setCommentInput(e.target.value)}
-                      onClick={(e) => e.stopPropagation()}
-                      autoFocus
+            
+            {/* Main Content */}
+            <div className="main-content">
+              {/* Create Project Modal */}
+              {showCreateProject && (
+                <div className="modal">
+                  <div className="modal-content">
+                    <h2>Create New Project</h2>
+                    <input 
+                      type="text" 
+                      value={newProjectName}
+                      onChange={(e) => setNewProjectName(e.target.value)}
+                      placeholder="Project Name"
                     />
-                    <div className="comment-actions">
-                      <button onClick={handleCommentSubmit}>Save</button>
-                      <button onClick={handleCommentCancel}>Cancel</button>
+                    <div className="modal-actions">
+                      <button onClick={() => setShowCreateProject(false)}>Cancel</button>
+                      <button onClick={handleCreateProject}>Create</button>
                     </div>
                   </div>
                 </div>
               )}
-            </div>
-            
-            <div className="detail-sidebar">
-              <div className="tools-section">
-                <h4>Tools</h4>
-                <div className="pin-color-selector">
-                  <h5>Pin Color</h5>
-                  <div className="color-options">
-                    <button 
-                      className={`color-option ${pinColor === '#FF4D4F' ? 'selected' : ''}`}
-                      style={{ backgroundColor: '#FF4D4F' }}
-                      onClick={() => setPinColor('#FF4D4F')}
-                    ></button>
-                    <button 
-                      className={`color-option ${pinColor === '#4CAF50' ? 'selected' : ''}`}
-                      style={{ backgroundColor: '#4CAF50' }}
-                      onClick={() => setPinColor('#4CAF50')}
-                    ></button>
-                    <button 
-                      className={`color-option ${pinColor === '#2196F3' ? 'selected' : ''}`}
-                      style={{ backgroundColor: '#2196F3' }}
-                      onClick={() => setPinColor('#2196F3')}
-                    ></button>
-                  </div>
-                </div>
-              </div>
               
-              <div className="comments-section">
-                <h4>Comments</h4>
-                <div className="comments-count">{currentProject.pins.length} pins</div>
-                
-                {currentProject.pins.length > 0 ? (
-                  <div className="comments-list">
-                    {currentProject.pins.map(pin => (
-                      <div key={pin.id} className="comment-item">
-                        <div 
-                          className="comment-pin-icon"
-                          style={{ backgroundColor: pin.color || '#FF4D4F' }}
-                        ></div>
-                        <div className="comment-content">
-                          <div className="comment-header">
-                            <span className="comment-title">Pin {pin.id.slice(-1)}</span>
-                            <span className={`comment-status ${pin.status || 'pending'}`}>{pin.status || 'Pending'}</span>
-                          </div>
-                          <div className="comment-text">{pin.comment || 'No comments yet'}</div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="no-comments">No comments yet</div>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-      ) : (
-        <>
-          {/* Sidebar */}
-          <div className={`sidebar ${showSidebar ? 'open' : 'closed'}`}>
-            <div className="sidebar-header">
-              <h1>PinShot</h1>
-              <button className="sidebar-toggle" onClick={toggleSidebar}>
-                {showSidebar ? '←' : '→'}
-              </button>
-            </div>
-            
-            <div className="sidebar-content">
-              <div className="sidebar-projects">
-                {projects.map(project => (
-                  <div 
-                    key={project.id} 
-                    className={`sidebar-project-item ${project.id === activeProject ? 'active' : ''}`}
-                    onClick={() => setActiveProject(project.id)}
-                  >
-                    <span className="project-icon">📁</span>
-                    <span>{project.name}</span>
-                    <button 
-                      className="project-menu-btn"
-                      onClick={(e) => toggleProjectMenu(project.id, e)}
-                    >
-                      ⋮
-                    </button>
-                    {projectMenuOpen === project.id && (
-                      <div className="project-menu">
-                        <button onClick={() => handleDeleteProject(project.id)}>Delete</button>
-                      </div>
-                    )}
-                  </div>
-                ))}
-                <div className="sidebar-project-item add" onClick={() => setShowCreateProject(true)}>
-                  <span className="project-icon">+</span>
-                  <span>Add Project</span>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Main Content */}
-          <div className="main-content">
-            {/* Header */}
-            <header className="header">
-              <button className="sidebar-toggle" onClick={toggleSidebar}>
-                {showSidebar ? '←' : '→'}
-              </button>
-              <button className="new-pinshot-btn" onClick={handleAddPinshot}>+ New PinShot</button>
-              <div className="project-selector">
-                <span className="selected-project">{currentProject.name}</span>
-                <span className="dropdown-arrow">▼</span>
-              </div>
-            </header>
-            
-            {/* Project Content */}
-            <div className="project-content">
-              <div className="project-header">
-                <div className="project-header-left">
-                  <h2>{currentProject.name}</h2>
-                  <p>Manage your visual feedback and screenshots</p>
-                </div>
-                <button className="upload-btn" onClick={handleAddPinshot}>
-                  + Add A Pinshot
-                </button>
-              </div>
-
-              <div className="project-actions">
-                
-                <div className="view-toggle">
-                  <button 
-                    className={`view-btn ${viewMode === 'grid' ? 'active' : ''}`}
-                    onClick={() => setViewMode('grid')}
-                  >
-                    <span className="grid-icon">⊞</span>
-                  </button>
-                  <button 
-                    className={`view-btn ${viewMode === 'list' ? 'active' : ''}`}
-                    onClick={() => setViewMode('list')}
-                  >
-                    <span className="list-icon">≡</span>
-                  </button>
-                </div>
-              </div>
-
-              {/* Pinshots Display */}
-              <div className={`pinshots-container ${viewMode}`}>
-                {pinshots.length === 0 ? (
-                  <div 
-                    className="empty-state"
-                    onDrop={handleDrop}
-                    onDragOver={handleDragOver}
-                  >
-                    <div className="empty-icon">📷</div>
-                    <h3>No screenshots found</h3>
-                    <p>Try adjusting your filter or add new screenshots</p>
-                    <button className="upload-btn" onClick={handleAddPinshot}>
-                      + Add A Pinshot
-                    </button>
-                  </div>
-                ) : (
-                  pinshots.map(pinshot => (
-                    <div 
-                      key={pinshot.id} 
-                      className={`pinshot-item ${selectedPinshot === pinshot.id ? 'selected' : ''}`}
-                      onClick={() => {
-                        setSelectedPinshot(pinshot.id);
-                        setDetailView(true);
-                      }}
-                    >
-                      <div className="pinshot-preview">
-                        <img src={pinshot.image} alt={pinshot.name} />
-                      </div>
-                      <div className="pinshot-info">
-                        <div className="pinshot-name">{pinshot.name}</div>
-                        <div className={`pinshot-status ${pinshot.status}`}>{pinshot.status}</div>
-                      </div>
-                    </div>
-                  ))
-                )}
-              </div>
-
-              {/* Selected Pinshot View */}
-              {selectedPinshot && currentProject.image && (
-                <div className="pinshot-detail">
-                  <div className="pinshot-detail-header">
-                    <h3>{pinshots.find(p => p.id === selectedPinshot)?.name}</h3>
-                    <div className="pinshot-tools">
-                      <div className="viewer-count">1 viewer</div>
-                      <div className="share-actions">
-                        <button 
-                          className="share-btn" 
-                          onClick={generateShareLink}
-                          disabled={isGeneratingLink}
-                        >
-                          {isGeneratingLink ? 'Generating...' : 'Share'}
-                        </button>
-                        <button 
-                          className="share-history-btn"
-                          onClick={() => setShowShareHistory(!showShareHistory)}
-                        >
-                          History
-                        </button>
-                        {showShareHistory && shareLinks.length > 0 && (
-                          <div className="share-history-dropdown">
-                            <h4>Recent Share Links</h4>
-                            <ul>
-                              {shareLinks
-                                .filter(link => link.projectId === activeProject)
-                                .map(link => (
-                                <li key={link.id}>
-                                  <a href={link.url} target="_blank" rel="noopener noreferrer">
-                                    {link.url.split('//')[1]}
-                                  </a>
-                                  <span className="share-date">
-                                    {link.createdAt.toLocaleDateString()}
-                                  </span>
-                                </li>
-                              ))}
-                            </ul>
-                          </div>
-                        )}
-                      </div>
+              {/* Project Content */}
+              {currentProject && (
+                <div className="project-content">
+                  <div className="project-header">
+                    <h2>{currentProject.name}</h2>
+                    <div className="project-actions">
+                      <button onClick={handleAddPinshot} className="add-pinshot-btn">+ Add Screenshot</button>
+                      <button onClick={handleShareClick} className="share-btn" disabled={isGeneratingLink}>
+                        {isGeneratingLink ? 'Generating...' : 'Share'}
+                      </button>
                     </div>
                   </div>
                   
-                  <div className="pinshot-view">
-                    <div 
-                      className="image-container" 
-                      ref={imageContainerRef}
-                      onClick={handleImageClick}
-                    >
-                      <img 
-                        src={currentProject.image} 
-                        alt={currentProject.name} 
-                      />
-                      
-                      {/* Display pins */}
-                      {currentProject.pins.map(pin => (
-                        <div 
-                          key={pin.id}
-                          className="pin"
-                          style={{ 
-                            left: `${pin.x}%`, 
-                            top: `${pin.y}%`,
-                          }}
-                          onClick={(e) => handlePinClick(e, pin.id)}
-                        >
+                  {/* Pinshots */}
+                  <div className="pinshots-container">
+                    {currentProject.pinshots.length === 0 ? (
+                      <div className="empty-state">
+                        <p>No screenshots yet. Add your first screenshot to get started.</p>
+                      </div>
+                    ) : (
+                      <div className="pinshots-grid">
+                        {currentProject.pinshots.map(pinshot => (
                           <div 
-                            className="pin-icon"
-                            style={{ backgroundColor: pin.color || '#FF4D4F' }}
-                          ></div>
-                          {activePinId === pin.id && (
-                            <div className="comment-bubble">
-                              {pin.comment}
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                      
-                      {/* Pending pin with comment input */}
-                      {pendingPin && (
-                        <div 
-                          className="pin pending"
-                          style={{ left: `${pendingPin.x}%`, top: `${pendingPin.y}%` }}
-                          onClick={(e) => e.stopPropagation()}
-                        >
+                            key={pinshot.id} 
+                            className={`pinshot-item ${pinshot.id === selectedPinshot ? 'selected' : ''}`}
+                            onClick={() => handlePinshotClick(pinshot.id)}
+                          >
+                            {pinshot.image ? (
+                              <img src={pinshot.image} alt={pinshot.name} />
+                            ) : (
+                              <div className="placeholder">No Image</div>
+                            )}
+                            <div className="pinshot-name">{pinshot.name}</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  
+                  {/* Selected Pinshot */}
+                  {currentPinshot && (
+                    <div className="pinshot-detail">
+                      <div 
+                        className="image-container" 
+                        ref={imageContainerRef}
+                        onClick={handleImageClick}
+                      >
+                        {currentPinshot.image && (
+                          <img src={currentPinshot.image} alt={currentPinshot.name} />
+                        )}
+                        
+                        {/* Pins */}
+                        {currentPinshot.pins.map(pin => (
                           <div 
-                            className="pin-icon"
-                            style={{ backgroundColor: pinColor }}
+                            key={pin.id}
+                            className={`pin ${pin.status} ${pin.id === selectedPin ? 'selected' : ''}`}
+                            style={{ 
+                              left: `${pin.x}%`, 
+                              top: `${pin.y}%`,
+                              backgroundColor: pin.color || '#FF4D4F'
+                            }}
+                            onClick={(e) => { e.stopPropagation(); handlePinClick(pin.id); }}
                           ></div>
-                          <div className="comment-input-container">
-                            <textarea
-                              placeholder="Add your comment..."
-                              value={commentInput}
-                              onChange={(e) => setCommentInput(e.target.value)}
-                              onClick={(e) => e.stopPropagation()}
-                              autoFocus
-                            />
-                            <div className="comment-actions">
-                              <button onClick={handleCommentSubmit}>Save</button>
-                              <button onClick={handleCommentCancel}>Cancel</button>
-                            </div>
+                        ))}
+                        
+                        {/* Pending Pin */}
+                        {pendingPin && (
+                          <div 
+                            className="pin pending"
+                            style={{ 
+                              left: `${pendingPin.x}%`, 
+                              top: `${pendingPin.y}%`,
+                              backgroundColor: pinColor
+                            }}
+                          ></div>
+                        )}
+                      </div>
+                      
+                      {/* Pin Detail */}
+                      {currentPin && (
+                        <div className="pin-detail">
+                          <h3>Pin Details</h3>
+                          <p>{currentPin.comment}</p>
+                          <div className="pin-actions">
+                            <select 
+                              value={currentPin.status || 'pending'}
+                              onChange={(e) => handleStatusChange(currentPin.id, e.target.value as 'pending' | 'resolved')}
+                            >
+                              <option value="pending">Pending</option>
+                              <option value="resolved">Resolved</option>
+                            </select>
                           </div>
                         </div>
                       )}
-                    </div>
-                    
-                    <div className="pinshot-sidebar">
-                      <div className="tools-section">
-                        <h4>Tools</h4>
-                        <div className="pin-color-selector">
-                          <h5>Pin Color</h5>
-                          <div className="color-options">
+                      
+                      {/* Pending Pin Comment */}
+                      {pendingPin && (
+                        <div className="pending-pin-form">
+                          <h3>Add Comment</h3>
+                          <textarea 
+                            value={pendingComment}
+                            onChange={handleCommentChange}
+                            placeholder="Enter your comment here..."
+                          ></textarea>
+                          <div className="color-picker">
+                            <span>Pin Color:</span>
                             <button 
                               className={`color-option ${pinColor === '#FF4D4F' ? 'selected' : ''}`}
                               style={{ backgroundColor: '#FF4D4F' }}
                               onClick={() => setPinColor('#FF4D4F')}
                             ></button>
                             <button 
-                              className={`color-option ${pinColor === '#4CAF50' ? 'selected' : ''}`}
-                              style={{ backgroundColor: '#4CAF50' }}
-                              onClick={() => setPinColor('#4CAF50')}
+                              className={`color-option ${pinColor === '#52C41A' ? 'selected' : ''}`}
+                              style={{ backgroundColor: '#52C41A' }}
+                              onClick={() => setPinColor('#52C41A')}
                             ></button>
                             <button 
-                              className={`color-option ${pinColor === '#2196F3' ? 'selected' : ''}`}
-                              style={{ backgroundColor: '#2196F3' }}
-                              onClick={() => setPinColor('#2196F3')}
+                              className={`color-option ${pinColor === '#1890FF' ? 'selected' : ''}`}
+                              style={{ backgroundColor: '#1890FF' }}
+                              onClick={() => setPinColor('#1890FF')}
                             ></button>
                           </div>
-                        </div>
-                        
-                        <div className="zoom-controls">
-                          <h5>Zoom</h5>
-                          <div className="zoom-slider">
-                            <button className="zoom-btn">-</button>
-                            <div className="zoom-level">100%</div>
-                            <button className="zoom-btn">+</button>
+                          <div className="form-actions">
+                            <button onClick={() => setPendingPin(null)}>Cancel</button>
+                            <button onClick={handleCommentSubmit}>Save</button>
                           </div>
                         </div>
-                      </div>
-                      
-                      <div className="comments-section">
-                        <h4>Comments</h4>
-                        <div className="comments-count">{currentProject.pins.length} pins</div>
-                        
-                        {currentProject.pins.length > 0 ? (
-                          <div className="comments-list">
-                            {currentProject.pins.map(pin => (
-                              <div key={pin.id} className="comment-item">
-                                <div 
-                                  className="comment-pin-icon"
-                                  style={{ backgroundColor: pin.color || '#FF4D4F' }}
-                                ></div>
-                                <div className="comment-content">
-                                  <div className="comment-header">
-                                    <span className="comment-title">Pin {pin.id.slice(-1)}</span>
-                                    <span className={`comment-status ${pin.status || 'pending'}`}>{pin.status || 'Pending'}</span>
-                                  </div>
-                                  <div className="comment-text">{pin.comment || 'No comments yet'}</div>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        ) : (
-                          <div className="no-comments">No comments yet</div>
-                        )}
-                      </div>
+                      )}
                     </div>
-                  </div>
+                  )}
                 </div>
               )}
-            </div>
-          </div>
-
-          {/* Create Project Modal */}
-          {showCreateProject && (
-            <div className="modal-overlay">
-              <div className="modal">
-                <h2>Create New Project</h2>
-                <input 
-                  type="text" 
-                  placeholder="Project Name" 
-                  value={newProjectName}
-                  onChange={(e) => setNewProjectName(e.target.value)}
-                />
-                <div className="modal-actions">
-                  <button onClick={() => setShowCreateProject(false)}>Cancel</button>
-                  <button onClick={handleCreateProject}>Create</button>
+              
+              {/* Share Links Section - Always visible but conditionally populated */}
+              <div className="share-history">
+                <div className="share-header">
+                  <h3>Share Links</h3>
+                  <button onClick={handleShareClick} className="share-btn-small" disabled={isGeneratingLink}>
+                    {isGeneratingLink ? 'Generating...' : '+ New Link'}
+                  </button>
                 </div>
+                {shareLinks.length === 0 ? (
+                  <p className="no-links">No share links created yet. Click '+ New Link' to create one.</p>
+                ) : (
+                  <ul>
+                    {shareLinks.map(link => (
+                      <li key={link.id}>
+                        <div className="share-link-info">
+                          <span className="share-url">{link.url}</span>
+                          <span className="share-date">
+                            Created: {link.createdAt.toLocaleDateString()}
+                            {link.expiresAt && (
+                              <> | Expires: {link.expiresAt.toLocaleDateString()}</>
+                            )}
+                          </span>
+                        </div>
+                        <div className="share-actions">
+                          <button onClick={() => navigator.clipboard.writeText(link.url)}>Copy</button>
+                          <button onClick={() => handleQRCodeClick(link.url)}>QR Code</button>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </div>
             </div>
-          )}
-
-          {/* Hidden file input */}
-          <input 
-            type="file" 
-            ref={fileInputRef} 
-            style={{ display: 'none' }} 
-            onChange={handleImageUpload}
-            accept="image/*"
-          />
-        </>
+          </div>
+        } />
+      </Routes>
+      
+      {/* Share Options Modal */}
+      {showShareOptions && (
+        <ShareOptionsModal 
+          onClose={() => setShowShareOptions(false)}
+          onShare={generateShareLink}
+        />
       )}
-    </div>
+      
+      {/* QR Code Modal */}
+      {showQRCode && (
+        <QRCodeModal 
+          url={currentShareUrl}
+          onClose={() => setShowQRCode(false)}
+          projectName={currentProject?.name || 'Project'}
+          onPreview={() => window.open(currentShareUrl, '_blank')}
+        />
+      )}
+      
+      {/* Hidden file input */}
+      <input 
+        type="file" 
+        ref={fileInputRef} 
+        style={{ display: 'none' }} 
+        accept="image/*"
+        onChange={handleFileChange}
+      />
+      <ToastContainer position="bottom-right" />
+    </>
   );
 };
 
